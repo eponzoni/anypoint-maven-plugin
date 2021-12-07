@@ -1,17 +1,18 @@
 package com.mulesoft.meetups;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import lombok.SneakyThrows;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
-import org.springframework.http.HttpStatus;
+import org.springframework.web.reactive.function.BodyExtractors;
+import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -48,30 +49,80 @@ public class MuleSoftSmokeTestMojo extends AbstractMojo
     @SneakyThrows
     public void execute() throws MojoExecutionException {
 
+        //--- Prints a banner ---//
         this.printBanner();
+
+        //--- Displays configuration ---//
+        this.printConfigInfo();
+
+        //--- Gets an Anypoint access token ---//
+        AnypointToken accessToken = getAnypointAccessToken();
+
+        //--- Gets details of current user based on access token ---//
+        AnypointUser user = client.getUser(accessToken.getAccessToken());
+
+        //--- Gets or Creates a new client application ---//
+        AnypointExchangeClientApplication clientApplication = getOrCreateAnypointExchangeClientApplication(accessToken, user);
+
+        //--- Gets environment details ---//
+        AnypointEnvironment environment = this.getAnypointEnvironment(accessToken, user);
+
+        //--- Gets API details ---//
+        AnypointAPI api = this.getAnypointAPI(accessToken, user, environment);
+
+        //--- Creates a new SLA tier for the API ---//
+        Long slaTierId = this.createApiSlaTier(accessToken, user, environment, api);
+
+        //--- Creates a new contract between API and client ---//
+        Long apiClientContractId = this.createApiClientContract(accessToken, user, clientApplication, environment, api, slaTierId);
+
+        //--- Executes smoke test and displays results ---//
+        ClientResponse response = this.smokeTestAndDisplayResult(clientApplication);
+
+        //--- Clean-up (contract, SLA tier, client application) ---//
+        this.cleanUp(accessToken, user, clientApplication, environment, api, slaTierId, apiClientContractId);
+
+        //--- Finalizes execution ---//
+        this.finalize(response);
+    }
+
+    /**
+     *
+     * @return
+     */
+    private AnypointToken getAnypointAccessToken() {
+        //---------------------------------------------------------//
+        //--- GET A NEW ACCESS TOKEN BASED ON USERNAME/PASSWORD ---//
+        //---------------------------------------------------------//
+        return client.getToken(
+                AnypointLogin.builder()
+                        .username(username)
+                        .password(password)
+                        .build());
+    }
+
+    /**
+     *
+     */
+    private void printConfigInfo() {
         getLog().info("");
         getLog().info("------------------------------------------------------------------------");
         getLog().info("                     SMOKE TEST - DETAILS                               ");
         getLog().info("------------------------------------------------------------------------");
         getLog().info(String.format("API.........: %s", apiName));
-        getLog().info(String.format("Environment.:  %s", environmentName));
+        getLog().info(String.format("Environment.: %s", environmentName));
         getLog().info(String.format("Endpoint URL: %s", endpointUrl));
         getLog().info("------------------------------------------------------------------------");
         getLog().info("");
-        //---------------------------------------------------------//
-        //--- GET A NEW ACCESS TOKEN BASED ON USERNAME/PASSWORD ---//
-        //---------------------------------------------------------//
-        AnypointToken accessToken = client.getToken(
-                AnypointLogin.builder()
-                        .username(username)
-                        .password(password)
-                        .build());
+    }
 
-        //-------------------------------------------------------------//
-        //--- GET DETAILS OF THE CURRENT USER BASED ON ACCESS TOKEN ---//
-        //-------------------------------------------------------------//
-        AnypointUser user = client.getUser(accessToken.getAccessToken());
-
+    /**
+     *
+     * @param accessToken
+     * @param user
+     * @return
+     */
+    private AnypointExchangeClientApplication getOrCreateAnypointExchangeClientApplication(AnypointToken accessToken, AnypointUser user) {
         //--------------------------------------------------//
         //--- CHECK FOR EXISTING APPLICATION IN EXCHANGE ---//
         //--------------------------------------------------//
@@ -99,7 +150,17 @@ public class MuleSoftSmokeTestMojo extends AbstractMojo
             clientApplication = optionalClientApplication.get();
             clientApplication.getId();
         }
+        return clientApplication;
+    }
 
+    /**
+     * 
+     * @param accessToken
+     * @param user
+     * @return
+     * @throws Exception
+     */
+    private AnypointEnvironment getAnypointEnvironment(AnypointToken accessToken, AnypointUser user) throws Exception {
         //----------------------------------------//
         //--- GET SPECIFIC ENVIRONMENT DETAILS ---//
         //----------------------------------------//
@@ -107,26 +168,46 @@ public class MuleSoftSmokeTestMojo extends AbstractMojo
         Optional<AnypointEnvironment> environment = environments.stream().filter(e -> e.getName().equalsIgnoreCase(environmentName)).findFirst();
 
         if (environment.isPresent() == false) {
-
-            getLog().error(String.format("Environment: %s not found.", environmentName));
-            return;
+            throw new Exception(String.format("Environment: %s not found.", environmentName));
         }
+        return environment.get();
+    }
 
+    /**
+     *
+     * @param accessToken
+     * @param user
+     * @param environment
+     * @return
+     * @throws Exception
+     */
+    private AnypointAPI getAnypointAPI(AnypointToken accessToken, AnypointUser user, AnypointEnvironment environment) throws Exception {
         //-----------------------------------------------------------//
         //--- GET DETAILS OF API INSTANCE WITHIN THAT ENVIRONMENT ---//
         //-----------------------------------------------------------//
         List<AnypointAPI> environmentAPIs = client.getAPIsByEnvironmentId(
                 accessToken.getAccessToken(),
                 user.getOrganizationId(),
-                environment.get().getId());
+                environment.getId());
 
         Optional<AnypointAPI> api = environmentAPIs.stream().filter(a -> a.getAssetId().equalsIgnoreCase(apiName)).findFirst();
 
         if (api.isPresent() == false) {
-            getLog().error(String.format("API: %s in Environment: %s not found.", apiName, environment));
-            return;
+            throw new Exception(String.format("API: %s in Environment: %s not found.", apiName, environment));
         }
 
+        return api.get();
+    }
+
+    /**
+     *
+     * @param accessToken
+     * @param user
+     * @param environment
+     * @param api
+     * @return
+     */
+    private Long createApiSlaTier(AnypointToken accessToken, AnypointUser user, AnypointEnvironment environment, AnypointAPI api) {
         //--------------------------------------------------------------//
         //--- CREATE A NEW SLA TIER FOR THAT API IN THAT ENVIRONMENT ---//
         //--------------------------------------------------------------//
@@ -136,7 +217,7 @@ public class MuleSoftSmokeTestMojo extends AbstractMojo
                 .description("Automated Testing SLA Tier")
                 .name("Automated Testing SLA Tier")
                 .limits(new ArrayList<>())
-                .apiVersionId(api.get().getId())
+                .apiVersionId(api.getId())
                 .build();
 
         slaTier.getLimits().add(
@@ -146,82 +227,123 @@ public class MuleSoftSmokeTestMojo extends AbstractMojo
                         .timePeriodInMilliseconds(1000)
                         .build());
 
-        Long slaTierId = client.createAPISlaTier(accessToken.getAccessToken(),
+        return client.createAPISlaTier(accessToken.getAccessToken(),
                 user.getOrganizationId(),
-                environment.get().getId(),
-                api.get().getId(),
+                environment.getId(),
+                api.getId(),
                 slaTier);
+    }
 
+    /**
+     *
+     * @param accessToken
+     * @param user
+     * @param clientApplication
+     * @param environment
+     * @param api
+     * @param slaTierId
+     * @return
+     * @throws JsonProcessingException
+     */
+    private Long createApiClientContract(AnypointToken accessToken, AnypointUser user, AnypointExchangeClientApplication clientApplication, AnypointEnvironment environment, AnypointAPI api, Long slaTierId) throws JsonProcessingException {
         //----------------------------------------------------------------------------------------------------//
         //--- CREATE A NEW CONTRACT: API IN ENVIRONMENT + CLIENT APPLICATION IN AUTOMATED TESTING SLA TIER ---//
         //----------------------------------------------------------------------------------------------------//
         AnypointAPIContract contract = AnypointAPIContract.builder()
-                .apiId(String.valueOf(api.get().getId()))
-                .environmentId(environment.get().getId())
+                .apiId(String.valueOf(api.getId()))
+                .environmentId(environment.getId())
                 .instanceType("api")
                 .requestedTierId(slaTierId)
                 .acceptedTerms(true)
                 .organizationId(user.getOrganizationId())
                 .groupId(user.getOrganizationId())
                 .assetId(apiName)
-                .version(api.get().getAssetVersion())
-                .versionGroup(api.get().getAssetVersion())
+                .version(api.getAssetVersion())
+                .versionGroup(api.getAssetVersion())
                 .build();
 
-        Long apiClientContractId = client.createAPIClientContract(
+        return client.createAPIClientContract(
                                     accessToken.getAccessToken(),
                                     user.getOrganizationId(),
                                     clientApplication.getId(),
                                     contract);
+    }
 
-        WebClient.builder().build()
+    /**
+     *
+     * @param response
+     * @throws Exception
+     */
+    private void finalize(ClientResponse response) throws Exception {
+        if (response.statusCode().isError()) {
+            throw new Exception("MuleSoft Application Smoke Test failed");
+        }
+    }
+
+    /**
+     *
+     * @param clientApplication
+     * @return
+     */
+    private ClientResponse smokeTestAndDisplayResult(AnypointExchangeClientApplication clientApplication) {
+        ClientResponse response = WebClient.builder().build()
             .get()
                 .uri(endpointUrl)
                 .header("X-Client-ID", clientApplication.getClientId())
                 .header("X-Client-Secret", clientApplication.getClientSecret())
                 .exchange()
-                .doOnSuccess(clientResponse -> {
-                    getLog().info("");
-                    getLog().info("------------------------------------------------------------------------");
-                    getLog().info("                     SMOKE TEST - RESULTS                               ");
-                    getLog().info("------------------------------------------------------------------------");
-                    getLog().info(String.format("HTTP method.: %s", "GET"));
-                    getLog().info(String.format("Endpoint URL: %s", endpointUrl));
-                    getLog().info(String.format("HTTP status.: %s - %s", HttpStatus.OK.value(), HttpStatus.OK.getReasonPhrase()));
-                    getLog().info("------------------------------------------------------------------------");
-                    getLog().info( "Result......: SUCCESS");
-                    getLog().info("------------------------------------------------------------------------");
-                    getLog().info("");
-                })
-                .doOnError(clientResponse -> {
-                    getLog().info("");
-                    getLog().info("------------------------------------------------------------------------");
-                    getLog().info("                     SMOKE TEST - RESULTS                               ");
-                    getLog().info("------------------------------------------------------------------------");
-                    getLog().info(String.format("HTTP method..: %s", "GET"));
-                    getLog().info(String.format("Endpoint URL.: %s", endpointUrl));
-                    getLog().info(String.format("Error Message: %s", clientResponse.getMessage()));
-                    getLog().info(  "Result.......: FAILURE");
-                    getLog().info("------------------------------------------------------------------------");
-                    getLog().info("");
-                }).block();
+                .block();
 
+        getLog().info("");
+        getLog().info("------------------------------------------------------------------------");
+        getLog().info("                     SMOKE TEST - RESULTS                               ");
+        getLog().info("------------------------------------------------------------------------");
+        getLog().info(String.format("HTTP method..: %s", "GET"));
+        getLog().info(String.format("Endpoint URL.: %s", endpointUrl));
+        getLog().info(String.format("HTTP status..: %s - %s", response.statusCode().value(), response.statusCode().getReasonPhrase()));
+        getLog().info(String.format("Response Body: %s", response.bodyToMono(String.class).block()));
+        getLog().info("------------------------------------------------------------------------");
+        getLog().info(String.format("Result.......: %s", response.statusCode().is2xxSuccessful() ? "SUCCESS" : "FAILURE"));
+        getLog().info("------------------------------------------------------------------------");
+        getLog().info("");
+        return response;
+    }
+
+    /**
+     *
+     * @param accessToken
+     * @param user
+     * @param clientApplication
+     * @param environment
+     * @param api
+     * @param slaTierId
+     * @param apiClientContractId
+     * @throws JsonProcessingException
+     */
+    private void cleanUp(AnypointToken accessToken, AnypointUser user, AnypointExchangeClientApplication clientApplication, AnypointEnvironment environment, AnypointAPI api, Long slaTierId, Long apiClientContractId) throws JsonProcessingException {
         client.deleteAPIClientContract(
                 accessToken.getAccessToken(),
                 user.getOrganizationId(),
-
-                environment.get().getId(),
-                api.get().getId(),
+                environment.getId(),
+                api.getId(),
                 apiClientContractId);
 
         client.deleteAPISlaTier(
                 accessToken.getAccessToken(),
                 user.getOrganizationId(),
-                environment.get().getId(),
-                api.get().getId(),
+                environment.getId(),
+                api.getId(),
                 slaTierId);
+
+        client.deleteClientApplicationInExchange(
+                accessToken.getAccessToken(),
+                user.getOrganizationId(),
+                clientApplication.getId());
     }
 
+    /**
+     * Simply displays a cool-looking banner!
+     */
     private void printBanner() {
         getLog().info("\n\n\n$$\\      $$\\         $$\\          $$$$$$\\           $$$$$$\\   $$\\           $$\\      $$\\                   $$\\                                                    \n" +
                 "$$$\\    $$$ |        $$ |        $$  __$$\\         $$  __$$\\  $$ |          $$$\\    $$$ |                  $$ |                                                   \n" +
@@ -244,12 +366,8 @@ public class MuleSoftSmokeTestMojo extends AbstractMojo
                 "\\__|  \\__|\\______/ \\_______\\__|  \\__\\__|\\_______\\__|  \\__|\\_______|                    \\_______/ \\_______|\\_______\\__/     \\________|\\______/\\________\\______|    \n" +
                 "                                                                                                                                                                  \n" +
                 "                                                                                                                                                                  \n" +
-                "                                                                                                                                                                  \n" +
-                "                                                                                                                                                                  \n" +
                 "$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\$$$$$$\\ \n" +
                 "\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______\\______|\n" +
-                "                                                                                                                                                                  \n" +
-                "                                                                                                                                                                  \n" +
                 "                                                                                                                                                                  \n" +
                 "                                                                                                                                                                  \n" +
                 "$$$$$$$\\                                       $$\\      $$\\                                           $$$$$$$\\ $$\\                  $$\\                           \n" +

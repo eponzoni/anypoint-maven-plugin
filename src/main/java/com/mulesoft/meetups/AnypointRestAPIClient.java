@@ -22,6 +22,7 @@ public class AnypointRestAPIClient {
 	private static final String ANYPOINT_API_CLIENT_APPLICATIONS_URL = "https://anypoint.mulesoft.com/exchange/api/v2/organizations/%s/applications";
 	private static final String ANYPOINT_API_LIST_BY_ENVIRONMENT_ID_URL = "https://anypoint.mulesoft.com/apimanager/xapi/v1/organizations/%s/environments/%s/apis?sort=name&ascending=true";
 	private static final String ANYPOINT_CLIENT_APPLICATIONS_URL = "https://anypoint.mulesoft.com/exchange/api/v2/organizations/%s/applications";
+	private static final String ANYPOINT_CLIENT_APPLICATION_URL = "https://anypoint.mulesoft.com/exchange/api/v1/organizations/%s/applications/%s";
 	private static final String ANYPOINT_ACCESS_TOKEN_PROPERTY = "access_token";
 	private static final String ANYPOINT_TOKEN_TYPE_PROPERTY = "token_type";
 	private static final String ANYPOINT_REDIRECT_URL_PROPERTY = "redirectUrl";
@@ -70,6 +71,20 @@ public class AnypointRestAPIClient {
 				.tokenType(response.get(ANYPOINT_TOKEN_TYPE_PROPERTY))
 				.redirectUrl(response.get(ANYPOINT_REDIRECT_URL_PROPERTY))
 				.build();
+	}
+
+	/**
+	 * Deletes a client application in Anypoint Exchange.
+	 * @param accessToken
+	 * @param groupId
+	 * @param applicationId
+	 */
+	public void deleteClientApplicationInExchange(String accessToken, String groupId, Long applicationId) {
+		WebClient.builder().build()
+			.delete()
+			.uri(String.format(ANYPOINT_CLIENT_APPLICATION_URL, groupId, applicationId))
+			.header(ANYPOINT_AUTHORIZATION_HEADER, String.format(ANYPOINT_AUTHORIZATION_BEARER, accessToken))
+			.retrieve().bodyToMono(Map.class).block();
 	}
 
 	/**
