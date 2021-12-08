@@ -1,6 +1,7 @@
 package com.mulesoft.meetups;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import io.netty.handler.codec.http.HttpContent;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -23,6 +24,9 @@ public class AnypointRestAPIClient {
 	private static final String ANYPOINT_API_LIST_BY_ENVIRONMENT_ID_URL = "https://anypoint.mulesoft.com/apimanager/xapi/v1/organizations/%s/environments/%s/apis?sort=name&ascending=true";
 	private static final String ANYPOINT_CLIENT_APPLICATIONS_URL = "https://anypoint.mulesoft.com/exchange/api/v2/organizations/%s/applications";
 	private static final String ANYPOINT_CLIENT_APPLICATION_URL = "https://anypoint.mulesoft.com/exchange/api/v1/organizations/%s/applications/%s";
+	private static final String ANYPOINT_API_ASSET_PORTAL_PAGES = "https://anypoint.mulesoft.com/exchange/api/v2/assets/%s/%s/%s/portal/draft/pages";
+	private static final String ANYPOINT_API_ASSET_PORTAL_PAGE = "https://anypoint.mulesoft.com/exchange/api/v2/assets/%s/%s/%s/portal/draft/pages/%s";
+	private static final String ANYPOINT_API_ASSET_PORTAL_PAGE_PUBLISH = "https://anypoint.mulesoft.com/exchange/api/v1/assets/%s/%s/%s";
 	private static final String ANYPOINT_ACCESS_TOKEN_PROPERTY = "access_token";
 	private static final String ANYPOINT_TOKEN_TYPE_PROPERTY = "token_type";
 	private static final String ANYPOINT_REDIRECT_URL_PROPERTY = "redirectUrl";
@@ -287,8 +291,7 @@ public class AnypointRestAPIClient {
 						.organizationId(d.get(ANYPOINT_ORGANIZATION_ID_PROPERTY))
 						.type(d.get(ANYPOINT_TYPE_PROPERTY))
 						.build()
-		)
-				.collect(Collectors.toList());
+		).collect(Collectors.toList());
 	}
 
 	/**
@@ -316,5 +319,105 @@ public class AnypointRestAPIClient {
 				.status(d.get(ANYPOINT_STATUS_PROPERTY))
 				.build()
 		).collect(Collectors.toList());
+	}
+
+	/**
+	 *
+	 * @param accessToken
+	 * @param groupId
+	 * @param apiName
+	 * @param pageName
+	 * @param apiVersion
+	 * @param contents
+	 */
+	public void createAssetPage(String accessToken, String groupId, String apiName, String pageName, String apiVersion, String contents) {
+
+		final String uri = String.format(ANYPOINT_API_ASSET_PORTAL_PAGE, groupId, apiName, apiVersion, pageName);
+
+		try {
+			this.createApiDocPage(accessToken, groupId, apiName, pageName, apiVersion);
+
+		} catch (Exception exception) {
+
+			//--- Means page already exists. Page must be deleted and published again. ---//
+			this.deleteApiDocPage(accessToken, uri);
+			this.publishDraftApiDocPage(accessToken, groupId, apiName, apiVersion, contents);
+			this.createApiDocPage(accessToken, groupId, apiName, pageName, apiVersion);
+		}
+
+		this.createDraftApiDocPage(accessToken, contents, uri);
+		this.publishDraftApiDocPage(accessToken, groupId, apiName, apiVersion, contents);
+	}
+
+	/**
+	 *
+	 * @param accessToken
+	 * @param contents
+	 * @param uri
+	 */
+	private void createDraftApiDocPage(String accessToken, String contents, String uri) {
+		WebClient.builder().build()
+				.put()
+				.uri(uri)
+				.header(ANYPOINT_AUTHORIZATION_HEADER, String.format(ANYPOINT_AUTHORIZATION_BEARER, accessToken))
+				.header("content-type", "text/markdown")
+				.body(BodyInserters.fromValue(contents))
+				.retrieve()
+				.toBodilessEntity()
+				.block();
+	}
+
+	/**
+	 *
+	 * @param accessToken
+	 * @param groupId
+	 * @param apiName
+	 * @param apiVersion
+	 * @param contents
+	 */
+	private void publishDraftApiDocPage(String accessToken, String groupId, String apiName, String apiVersion, String contents) {
+		WebClient.builder().build()
+				.patch()
+				.uri(String.format(ANYPOINT_API_ASSET_PORTAL_PAGE_PUBLISH, groupId, apiName, apiVersion))
+				.header(ANYPOINT_AUTHORIZATION_HEADER, String.format(ANYPOINT_AUTHORIZATION_BEARER, accessToken))
+				.body(BodyInserters.fromValue(contents))
+				.retrieve()
+				.toBodilessEntity()
+				.block();
+	}
+
+	/**
+	 *
+	 * @param accessToken
+	 * @param uri
+	 */
+	private void deleteApiDocPage(String accessToken, String uri) {
+		WebClient.builder().build()
+				.delete()
+				.uri(uri)
+				.header(ANYPOINT_AUTHORIZATION_HEADER, String.format(ANYPOINT_AUTHORIZATION_BEARER, accessToken))
+				.retrieve()
+				.toBodilessEntity()
+				.block();
+	}
+
+	/**
+	 *
+	 * @param accessToken
+	 * @param groupId
+	 * @param apiName
+	 * @param pageName
+	 * @param apiVersion
+	 */
+	private void createApiDocPage(String accessToken, String groupId, String apiName, String pageName, String apiVersion) {
+		WebClient.builder().build()
+				.post()
+				.uri(String.format(ANYPOINT_API_ASSET_PORTAL_PAGES, groupId, apiName, apiVersion))
+				.header(ANYPOINT_AUTHORIZATION_HEADER, String.format(ANYPOINT_AUTHORIZATION_BEARER, accessToken))
+				.header("content-type", "application/json")
+				.body(BodyInserters.fromValue(String.format("{\"pagePath\":\"%s\"}", pageName)))
+				.retrieve()
+				.toBodilessEntity()
+				.block();
 	}
 }
